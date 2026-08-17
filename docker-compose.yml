@@ -1,0 +1,18 @@
+# 本地开发用 PostgreSQL 数据库
+# 用法：npm run db:up   （关闭：npm run db:down）
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: home_dinner_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: home_dinner
+      POSTGRES_PASSWORD: home_dinner
+      POSTGRES_DB: home_dinner
+    ports:
+      - "5432:5432"
+    volumes:
+      - home_dinner_pgdata:/var/lib/postgresql/data
+
+volumes:
+  home_dinner_pgdata:

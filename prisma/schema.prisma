@@ -1,0 +1,86 @@
+// ─────────────────────────────────────────────
+// 家宴点菜 · 数据模型
+// ─────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  HOST
+  GUEST
+}
+
+enum OrderStatus {
+  PENDING // 待确认
+  CONFIRMED // 已确认
+  COMPLETED // 已完成
+  CANCELLED // 已取消
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         Role     @default(GUEST)
+  createdAt    DateTime @default(now())
+  orders       Order[]
+}
+
+model Dish {
+  id          String      @id @default(cuid())
+  name        String
+  description String?
+  priceCents  Int
+  category    String      @default("热菜")
+  imageUrl    String?
+  available   Boolean     @default(true)
+  sortOrder   Int         @default(0)
+  createdAt   DateTime    @default(now())
+  orderItems  OrderItem[]
+}
+
+model Order {
+  id         String      @id @default(cuid())
+  user       User        @relation(fields: [userId], references: [id])
+  userId     String
+  guestName  String
+  date       String // "2026-08-20"
+  timeSlot   String // "18:00"
+  notes      String?
+  status     OrderStatus @default(PENDING)
+  totalCents Int
+  items      OrderItem[]
+  createdAt  DateTime    @default(now())
+
+  @@index([date])
+  @@index([userId])
+}
+
+model OrderItem {
+  id         String @id @default(cuid())
+  order      Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId    String
+  dish       Dish?  @relation(fields: [dishId], references: [id], onDelete: SetNull)
+  dishId     String?
+  dishName   String // 下单时的菜名快照
+  priceCents Int    // 下单时的单价快照（分）
+  quantity   Int
+}
+
+model BlockedSlot {
+  id        String   @id @default(cuid())
+  date      String // "2026-08-20"
+  timeFrom  String? // 例如 "18:00"；为空表示整天不可约
+  timeTo    String?
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([date])
+}
