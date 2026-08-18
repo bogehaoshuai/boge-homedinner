@@ -37,18 +37,22 @@ export async function PATCH(req: Request, { params }: Params) {
     include: { items: true },
   });
 
-  // 通知主人（尽力而为，不阻塞取消）；用请求 origin 拼链接，避免指向 localhost
+  // 通知主人：必须等待发送完成再返回（原因见 orders/route.ts 注释：
+  // serverless 函数返回后会被冻结，发完即忘会导致邮件延迟/丢失）
   if (updated) {
     const origin = new URL(req.url).origin;
-    void sendOrderCancelledEmail(
-      {
-        orderId: updated.id,
-        guestName: updated.guestName,
-        date: updated.date,
-        timeSlot: updated.timeSlot,
-      },
-      origin
-    );
+    await Promise.race([
+      sendOrderCancelledEmail(
+        {
+          orderId: updated.id,
+          guestName: updated.guestName,
+          date: updated.date,
+          timeSlot: updated.timeSlot,
+        },
+        origin
+      ),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
   }
 
   return NextResponse.json({ order: updated });

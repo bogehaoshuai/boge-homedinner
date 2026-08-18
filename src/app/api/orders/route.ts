@@ -156,20 +156,26 @@ export async function POST(req: Request) {
       },
     });
 
-    // 邮件通知（尽力而为，不阻塞下单）；用请求 origin 拼链接，避免指向 localhost
+    // 邮件通知：必须等待发送完成再返回。
+    // 原因：Vercel serverless 函数返回响应后会被冻结，之前用 `void send...`（发完即忘）
+    // 常常导致邮件请求还没真正发出就被冻结，出现「下单了但邮件没发/发得慢」。
+    // 这里 await + 3 秒超时兜底：Resend 正常几百毫秒就受理，超时也不阻塞下单。
     const origin = new URL(req.url).origin;
-    void sendOrderNotificationEmail(
-      {
-        orderId: order.id,
-        guestName: order.guestName,
-        date: order.date,
-        timeSlot: order.timeSlot,
-        notes: order.notes,
-        totalCents: order.totalCents,
-        items: validItems,
-      },
-      origin
-    );
+    await Promise.race([
+      sendOrderNotificationEmail(
+        {
+          orderId: order.id,
+          guestName: order.guestName,
+          date: order.date,
+          timeSlot: order.timeSlot,
+          notes: order.notes,
+          totalCents: order.totalCents,
+          items: validItems,
+        },
+        origin
+      ),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
 
     return NextResponse.json(
       { ok: true, order: { id: order.id, date, timeSlot, totalCents } },
