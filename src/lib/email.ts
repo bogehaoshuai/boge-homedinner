@@ -21,23 +21,20 @@ type OrderItemInfo = {
   priceCents: number;
   options: { group: string; choice: string }[];
   ingredients: { name: string; gramsPerServing: number }[];
+  addedBy?: string | null; // 是谁加的（共享订单）
 };
 
-type OrderNotifyInput = {
+/** 邮件发送入参：整个共享订单的当前状态 */
+type OrderUpdateInput = {
   orderId: string;
-  guestName: string;
   date: string;
   timeSlot: string;
   notes?: string | null;
   totalCents: number;
   items: OrderItemInfo[];
-};
-
-type OrderCancelInput = {
-  orderId: string;
-  guestName: string;
-  date: string;
-  timeSlot: string;
+  /** 这次操作说明，例如「提交了点单」「修改了点单」「移除了菜品」 */
+  actionPhrase: string;
+  actorName: string;
 };
 
 /**
@@ -63,11 +60,12 @@ function optionsText(options: { group: string; choice: string }[]): string {
   return options.map((o) => `${o.group}:${o.choice}`).join(" · ");
 }
 
-/** 发送新订单通知邮件（失败静默，不阻塞下单） */
-export async function sendOrderNotificationEmail(
-  input: OrderNotifyInput,
-  origin?: string
-) {
+/**
+ * 发送「共享订单」变更通知邮件（加菜 / 改数量 / 删菜都会触发）。
+ * 展示该时段当前全部菜品，并按「每份克重 × 份数」汇总备料清单。
+ * 失败静默，不阻塞下单。
+ */
+export async function sendOrderUpdateEmail(input: OrderUpdateInput, origin?: string) {
   const apiKey = process.env.RESEND_API_KEY;
   const to = process.env.RESEND_TO_EMAIL;
   const from = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev";
@@ -83,8 +81,12 @@ export async function sendOrderNotificationEmail(
       const optsHtml = opts
         ? `<div style="color:#8A7A6C;font-size:12px;">${escapeHtml(opts)}</div>`
         : "";
+      const who = it.addedBy
+        ? `<div style="color:#B3402A;font-size:11px;">${escapeHtml(it.addedBy)}</div>`
+        : "";
       return `<tr>
         <td style="padding:8px 12px;border-bottom:1px solid #eee;">
+          ${who}
           <div>${escapeHtml(it.dishName)}</div>
           ${optsHtml}
         </td>
@@ -94,7 +96,7 @@ export async function sendOrderNotificationEmail(
     })
     .join("");
 
-  // 备料清单：按原料名汇总克重 = 每份克重 × 份数
+  // 备料清单：同名配料合并克重 = 每份克重 × 份数
   const prepMap = new Map<string, number>();
   for (const it of input.items) {
     for (const ing of it.ingredients) {
@@ -114,7 +116,7 @@ export async function sendOrderNotificationEmail(
       : "";
 
   const notesHtml = input.notes
-    ? `<p style="color:#8A7A6C;margin:8px 0 20px;">备注：${escapeHtml(input.notes)}</p>`
+    ? `<p style="color:#8A7A6C;margin:8px 0 20px;white-space:pre-line;">${escapeHtml(input.notes)}</p>`
     : "";
 
   const prepHtml = prepRows
@@ -128,9 +130,10 @@ export async function sendOrderNotificationEmail(
 
   const html = `
   <div style="font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;max-width:520px;margin:0 auto;padding:24px;background:#FAF5EC;">
-    <h2 style="color:#B3402A;margin:0 0 16px;">🍽️ 新的点菜订单</h2>
-    <p style="color:#2A211B;margin:0 0 4px;">${escapeHtml(input.guestName)} 下单了</p>
-    <p style="color:#8A7A6C;margin:0 0 4px;">${formatCnDate(input.date)}（${weekdayCn(
+    <h2 style="color:#B3402A;margin:0 0 16px;">🍽️ ${escapeHtml(input.actorName)}${escapeHtml(
+      input.actionPhrase
+    )}</h2>
+    <p style="color:#2A211B;margin:0 0 4px;">${formatCnDate(input.date)}（${weekdayCn(
       input.date
     )}）· ${escapeHtml(input.timeSlot)}</p>
     ${notesHtml}
@@ -156,46 +159,12 @@ export async function sendOrderNotificationEmail(
     await resend.emails.send({
       from,
       to: [to],
-      subject: `【家宴点菜】${escapeHtml(input.guestName)} 的新订单 #${input.orderId.slice(-6)}`,
+      subject: `【家宴点菜】${escapeHtml(input.actorName)}${escapeHtml(
+        input.actionPhrase
+      )} #${input.orderId.slice(-6)}`,
       html,
     });
   } catch (err) {
     console.error("[email] 发送失败（不影响下单）:", err);
-  }
-}
-
-/** 发送订单取消通知邮件（失败静默） */
-export async function sendOrderCancelledEmail(input: OrderCancelInput, origin?: string) {
-  const apiKey = process.env.RESEND_API_KEY;
-  const to = process.env.RESEND_TO_EMAIL;
-  const from = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev";
-  const baseUrl = resolveSiteUrl(origin);
-
-  if (!apiKey || !to) return;
-
-  const html = `
-  <div style="font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;max-width:520px;margin:0 auto;padding:24px;background:#FAF5EC;">
-    <h2 style="color:#B3402A;margin:0 0 16px;">📋 订单被取消了</h2>
-    <p style="color:#2A211B;margin:0 0 4px;">${escapeHtml(input.guestName)} 取消了 ${formatCnDate(
-      input.date
-    )}（${weekdayCn(input.date)}）· ${escapeHtml(input.timeSlot)} 的订单</p>
-    <p style="color:#8A7A6C;margin:16px 0 0;font-size:14px;">订单号 #${input.orderId
-      .slice(-6)
-      .toUpperCase()}，食材采购前记得核对。</p>
-    <a href="${baseUrl}/admin/orders"
-       style="display:inline-block;margin-top:20px;background:#B3402A;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;">
-       去管理后台查看</a>
-  </div>`;
-
-  try {
-    const resend = new Resend(apiKey);
-    await resend.emails.send({
-      from,
-      to: [to],
-      subject: `【家宴点菜】${escapeHtml(input.guestName)} 取消了订单 #${input.orderId.slice(-6)}`,
-      html,
-    });
-  } catch (err) {
-    console.error("[email] 取消通知发送失败:", err);
   }
 }

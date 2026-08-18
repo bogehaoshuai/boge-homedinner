@@ -1,24 +1,10 @@
-/** 可预约的时间席（按是否含午餐/晚餐分组显示） */
-export const TIME_SLOTS = [
-  "11:30",
-  "12:00",
-  "12:30",
-  "17:30",
-  "18:00",
-  "18:30",
-  "19:00",
-] as const;
+/** 可预约的时间段：只有午宴 / 晚宴 */
+export const TIME_SLOTS = ["午饭", "晚饭"] as const;
 
 export type TimeSlot = (typeof TIME_SLOTS)[number];
 
 export const isTimeSlot = (t: string): t is TimeSlot =>
   (TIME_SLOTS as readonly string[]).includes(t);
-
-/** 根据时间返回「午宴 / 晚宴」标签 */
-export function mealLabel(time: string): string {
-  const hour = parseInt(time.split(":")[0], 10);
-  return hour < 14 ? "午宴" : "晚宴";
-}
 
 export const DISH_CATEGORIES = [
   "前菜",

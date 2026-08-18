@@ -94,6 +94,7 @@ model Order {
   items      OrderItem[]
   createdAt  DateTime    @default(now())
 
+  @@unique([date, timeSlot])
   @@index([date])
   @@index([userId])
 }
@@ -107,8 +108,10 @@ model OrderItem {
   dishName   String // 下单时的菜名快照
   priceCents Int // 下单时的单价快照（分）
   quantity    Int
-  options     Json? // 下单时快照的选项：[{ group: "辣度", choice: "重辣" }]
-  ingredients Json? // 下单时快照的备料：[{ name: "牛腩", gramsPerServing: 250 }]
+  options        Json? // 下单时快照的选项：[{ group: "辣度", choice: "重辣" }]
+  ingredients    Json? // 下单时快照的备料：[{ name: "牛腩", gramsPerServing: 250 }]
+  addedByUserId  String? // 是谁加的这道菜（共享订单）
+  addedByName    String? // 添加者姓名快照
 }
 
 model BlockedSlot {

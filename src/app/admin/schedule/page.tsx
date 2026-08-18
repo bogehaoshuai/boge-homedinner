@@ -27,8 +27,8 @@ export default function AdminSchedulePage() {
   const [form, setForm] = useState({
     date: todayInputValue(),
     wholeDay: true,
-    timeFrom: "18:00",
-    timeTo: "19:00",
+    timeFrom: "午饭",
+    timeTo: "晚饭",
     note: "",
   });
   const [error, setError] = useState<string | null>(null);
@@ -68,7 +68,7 @@ export default function AdminSchedulePage() {
         return;
       }
       setModalOpen(false);
-      setForm({ date: todayInputValue(), wholeDay: true, timeFrom: "18:00", timeTo: "19:00", note: "" });
+      setForm({ date: todayInputValue(), wholeDay: true, timeFrom: "午饭", timeTo: "晚饭", note: "" });
       await load();
     } catch {
       setError("保存失败");

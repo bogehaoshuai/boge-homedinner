@@ -10,11 +10,12 @@ import {
   Minus,
   Plus,
   ShoppingBasket,
+  Users,
   UtensilsCrossed,
 } from "lucide-react";
 import { Button, Modal, Spinner, Textarea } from "@/components/ui";
-import { mealLabel } from "@/lib/constants";
 import { formatCnDate, weekdayCn, type DateOption } from "@/lib/date";
+import SharedOrderItems, { type SharedOrderType } from "@/components/guest/SharedOrderItems";
 
 export type Dish = {
   id: string;
@@ -122,6 +123,13 @@ export default function OrderFlow({
     selected: string[];
   } | null>(null);
 
+  // 该时段共享订单（大家都点了什么，可互相改删）
+  const [shared, setShared] = useState<SharedOrderType | null>(null);
+  const [sharedState, setSharedState] = useState<"idle" | "loading" | "needsLogin" | "ready">(
+    "idle"
+  );
+  const [sharedError, setSharedError] = useState<string | null>(null);
+
   const loadSlots = useCallback(async (d: string) => {
     setSlots(null);
     setDayBlocked(false);
@@ -161,6 +169,53 @@ export default function OrderFlow({
   useEffect(() => {
     loadSlots(date);
   }, [date, loadSlots]);
+
+  /** 拉取该时段共享订单（登录后可见） */
+  const refreshShared = useCallback(async (d: string, s: string) => {
+    setSharedError(null);
+    try {
+      const res = await fetch(
+        `/api/orders/shared?date=${encodeURIComponent(d)}&timeSlot=${encodeURIComponent(s)}`
+      );
+      if (res.status === 401) {
+        setSharedState("needsLogin");
+        setShared(null);
+        return;
+      }
+      const data = await res.json();
+      if (res.ok) {
+        setShared(
+          data.order
+            ? {
+                id: data.order.id,
+                status: data.order.status,
+                totalCents: data.order.totalCents,
+                items: data.order.items,
+              }
+            : null
+        );
+        setSharedState("ready");
+      } else {
+        setShared(null);
+        setSharedState("ready");
+      }
+    } catch {
+      setShared(null);
+      setSharedState("ready");
+    }
+  }, []);
+
+  // 选定时段后拉取共享订单，并每 10 秒轮询刷新（让朋友间互相看见）
+  useEffect(() => {
+    if (!slot || dayBlocked) {
+      setShared(null);
+      setSharedState("idle");
+      return;
+    }
+    refreshShared(date, slot);
+    const timer = setInterval(() => refreshShared(date, slot), 10000);
+    return () => clearInterval(timer);
+  }, [slot, dayBlocked, date, refreshShared]);
 
   // 实时保存草稿（hydrated 之后才写，避免覆盖未恢复的草稿）
   useEffect(() => {
@@ -292,7 +347,13 @@ export default function OrderFlow({
             <span className="font-semibold text-cinnabar">{yuan(success.totalCents)}</span>
           </div>
           <div className="mt-4 text-xs text-muted">订单号 #{success.id.slice(-8).toUpperCase()}</div>
-          <Button className="mt-6 w-full" onClick={() => setSuccess(null)}>
+          <Button
+            className="mt-6 w-full"
+            onClick={() => {
+              setSuccess(null);
+              if (slot) refreshShared(date, slot);
+            }}
+          >
             再点一单
           </Button>
         </div>
@@ -362,15 +423,48 @@ export default function OrderFlow({
                   }`}
                 >
                   {s.time}
-                  <span className={`ml-1.5 text-xs ${disabled ? "" : active ? "text-white/70" : "text-muted"}`}>
-                    {s.label}
-                  </span>
                 </button>
               );
             })}
           </div>
         )}
       </div>
+
+      {/* ── 该时段已有点单（共享，可互相改删） ── */}
+      {slot && !dayBlocked && (
+        <div className="mt-5 rounded-2xl border border-line bg-card p-5 shadow-menu sm:p-6">
+          <div className="flex items-center gap-2">
+            <Users className="h-5 w-5 text-cinnabar" />
+            <h2 className="font-display text-lg font-bold">这个时段大家点了</h2>
+            {shared && (
+              <span className="text-xs text-muted">
+                · {shared.items.length} 道菜，待确认时可互相修改
+              </span>
+            )}
+          </div>
+          <div className="mt-3">
+            {sharedState === "needsLogin" ? (
+              <p className="rounded-xl bg-paper/60 px-4 py-3 text-sm text-muted">
+                登录后就能看到这个时段大家都点了什么
+              </p>
+            ) : sharedState === "loading" ? (
+              <p className="flex items-center gap-2 text-sm text-muted">
+                <Spinner /> 加载中…
+              </p>
+            ) : (
+              <>
+                <SharedOrderItems
+                  order={shared}
+                  editable={!!shared && shared.status === "PENDING"}
+                  onChanged={() => refreshShared(date, slot)}
+                  onError={setSharedError}
+                />
+                {sharedError && <p className="mt-2 text-sm text-cinnabar">{sharedError}</p>}
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── 菜单 ────────────────────────────── */}
       <div className="mt-10">
@@ -603,7 +697,7 @@ export default function OrderFlow({
           <div>
             <div className="mb-3 rounded-lg bg-paper px-3 py-2 text-sm text-ink/70">
               {formatCnDate(date)}（{weekdayCn(date)}）·{" "}
-              {slot ? `${slot} · ${mealLabel(slot)}` : "还没选时间"}
+              {slot ? slot : "还没选时间"}
             </div>
             <ul className="divide-y divide-line/70">
               {cart.map((l) => {

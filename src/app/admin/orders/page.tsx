@@ -13,6 +13,7 @@ type OrderItem = {
   priceCents: number;
   options: unknown;
   ingredients: unknown;
+  addedByName?: string | null;
 };
 
 type PrepRow = { name: string; grams: number };
@@ -203,7 +204,14 @@ export default function AdminOrdersPage() {
                         return (
                           <div key={it.id}>
                             <div className="flex justify-between">
-                              <span>{it.dishName}</span>
+                              <span>
+                                {it.addedByName && (
+                                  <span className="text-xs text-cinnabar">
+                                    {it.addedByName} ·{" "}
+                                  </span>
+                                )}
+                                {it.dishName}
+                              </span>
                               <span className="text-muted">×{it.quantity}</span>
                             </div>
                             {opts && <div className="text-xs text-muted">{opts}</div>}

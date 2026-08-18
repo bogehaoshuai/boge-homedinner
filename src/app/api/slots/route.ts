@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { TIME_SLOTS, mealLabel } from "@/lib/constants";
+import { TIME_SLOTS } from "@/lib/constants";
 import { isBookableDate } from "@/lib/date";
 
 /**
@@ -32,7 +32,7 @@ export async function GET(req: Request) {
         }
       }
     }
-    return { time, label: mealLabel(time), available };
+    return { time, label: "", available };
   });
 
   return NextResponse.json({ date, dayBlocked: wholeDayBlocked, note, slots });

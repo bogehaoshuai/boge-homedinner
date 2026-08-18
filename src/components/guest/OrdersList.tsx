@@ -1,70 +1,39 @@
 "use client";
 
-import { useState } from "react";
-import { Loader2, X } from "lucide-react";
-import { Badge, Button } from "@/components/ui";
+import { useCallback, useState } from "react";
+import { Badge } from "@/components/ui";
 import { ORDER_STATUS_LABEL, ORDER_STATUS_COLOR } from "@/lib/constants";
 import { formatCnDate, weekdayCn } from "@/lib/date";
+import SharedOrderItems, {
+  type SharedItem,
+  type SharedOrderType,
+} from "@/components/guest/SharedOrderItems";
 
-type OrderItem = {
-  id: string;
-  dishName: string;
-  quantity: number;
-  priceCents: number;
-  options: unknown;
-};
-
-function optionsText(it: OrderItem): string {
-  if (!Array.isArray(it.options)) return "";
-  return it.options
-    .map((o) => {
-      const g = o as { group?: string; choice?: string };
-      return `${g.group ?? ""}:${g.choice ?? ""}`;
-    })
-    .filter((s) => s !== ":")
-    .join(" · ");
-}
-
-export type Order = {
-  id: string;
+type Order = SharedOrderType & {
   date: string;
   timeSlot: string;
   notes: string | null;
-  status: string;
-  totalCents: number;
   createdAt: string;
-  items: OrderItem[];
+  items: SharedItem[];
 };
 
+/**
+ * 我的点单：显示我参与过的共享订单。
+ * 同一（日期+午/晚饭）是一个共享订单；待确认状态下可对任一条目改数量/删除。
+ */
 export default function OrdersList({ initialOrders }: { initialOrders: Order[] }) {
   const [orders, setOrders] = useState<Order[]>(initialOrders);
-  const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function cancel(id: string) {
-    if (!window.confirm("确定取消这单吗？主人会收到取消通知。")) return;
-    setBusyId(id);
-    setError(null);
+  const load = useCallback(async () => {
     try {
-      const res = await fetch(`/api/orders/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "cancel" }),
-      });
+      const res = await fetch("/api/orders");
       const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || "取消失败，请稍后再试");
-        return;
-      }
-      setOrders((prev) =>
-        prev.map((o) => (o.id === id ? { ...o, status: "CANCELLED" } : o))
-      );
+      if (res.ok) setOrders(data.orders);
     } catch {
-      setError("网络异常，请检查连接后重试");
-    } finally {
-      setBusyId(null);
+      // 静默，保留当前列表
     }
-  }
+  }, []);
 
   if (orders.length === 0) {
     return (
@@ -73,8 +42,6 @@ export default function OrdersList({ initialOrders }: { initialOrders: Order[] }
       </div>
     );
   }
-
-  const cancellable = (status: string) => status === "PENDING" || status === "CONFIRMED";
 
   return (
     <div>
@@ -88,52 +55,27 @@ export default function OrdersList({ initialOrders }: { initialOrders: Order[] }
                   {formatCnDate(o.date)}（{weekdayCn(o.date)}）
                 </span>
                 <span className="text-muted">· {o.timeSlot}</span>
+                <span className="text-xs text-muted">· 你参与的点单</span>
               </div>
               <Badge className={ORDER_STATUS_COLOR[o.status]}>
                 {ORDER_STATUS_LABEL[o.status]}
               </Badge>
             </div>
 
-            <ul className="mt-3 space-y-1 text-sm text-ink/80">
-              {o.items.map((it) => {
-                const opts = optionsText(it);
-                return (
-                  <li key={it.id} className="flex justify-between">
-                    <div>
-                      <span>{it.dishName}</span>
-                      {opts && <span className="ml-2 text-xs text-muted">{opts}</span>}
-                    </div>
-                    <span className="text-muted">
-                      x{it.quantity} · ¥{((it.priceCents * it.quantity) / 100).toFixed(0)}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
+            <div className="mt-3">
+              <SharedOrderItems
+                order={o}
+                editable={o.status === "PENDING"}
+                onChanged={load}
+                onError={setError}
+              />
+            </div>
 
             {o.notes && (
-              <p className="mt-3 rounded-lg bg-paper px-3 py-2 text-xs text-muted">
+              <p className="mt-3 whitespace-pre-line rounded-lg bg-paper px-3 py-2 text-xs text-muted">
                 备注：{o.notes}
               </p>
             )}
-
-            <div className="mt-3 flex items-center justify-between border-t border-line/70 pt-3">
-              <span className="text-xs text-muted">订单号 #{o.id.slice(-8).toUpperCase()}</span>
-              <div className="flex items-center gap-3">
-                <span className="text-sm">
-                  合计{" "}
-                  <span className="font-display font-bold text-cinnabar">
-                    ¥{(o.totalCents / 100).toFixed(0)}
-                  </span>
-                </span>
-                {cancellable(o.status) && (
-                  <Button size="sm" variant="danger" onClick={() => cancel(o.id)} disabled={busyId === o.id}>
-                    {busyId === o.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}
-                    取消订单
-                  </Button>
-                )}
-              </div>
-            </div>
           </li>
         ))}
       </ul>

@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
+import { OrderStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { isTimeSlot } from "@/lib/constants";
 import { isBookableDate } from "@/lib/date";
-import { sendOrderNotificationEmail } from "@/lib/email";
+import { sendUpdateWithTimeout } from "@/lib/order-email";
 
 type OrderItemInput = {
   dishId: string;
@@ -20,7 +21,11 @@ type EmailItem = {
   ingredients: { name: string; gramsPerServing: number }[];
 };
 
-/** 下单 */
+/**
+ * 下单：往「共享订单」里追加菜品。
+ * 同一（日期 + 午/晚饭）只有一个共享订单，任何人加入都进同一单；
+ * 所有人可互相看见，且待确认（PENDING）状态下可互相改删。
+ */
 export async function POST(req: Request) {
   const session = await getSession();
   if (!session) {
@@ -31,7 +36,7 @@ export async function POST(req: Request) {
     const body = await req.json();
     const date: string = String(body.date ?? "");
     const timeSlot: string = String(body.timeSlot ?? "");
-    const notes: string = String(body.notes ?? "").slice(0, 300);
+    const notes: string = String(body.notes ?? "").trim().slice(0, 200);
     const itemsRaw: unknown = body.items;
 
     // 基础校验
@@ -39,7 +44,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "日期无效或已过期" }, { status: 400 });
     }
     if (!isTimeSlot(timeSlot)) {
-      return NextResponse.json({ error: "请选择有效的时间席" }, { status: 400 });
+      return NextResponse.json({ error: "请选择有效的时间段" }, { status: 400 });
     }
     if (!Array.isArray(itemsRaw) || itemsRaw.length === 0) {
       return NextResponse.json({ error: "请至少点一道菜" }, { status: 400 });
@@ -81,7 +86,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "这个时段主人不方便，换一个吧" }, { status: 400 });
     }
 
-    // 取菜品（含选项组与原料），快照名称/价格/选项/原料，计算合计
+    // 取菜品（含选项组与原料），快照名称/价格/选项/原料
     const ids = [...new Set(items.map((i) => i.dishId))];
     const dishes = await prisma.dish.findMany({
       where: { id: { in: ids }, available: true },
@@ -92,7 +97,6 @@ export async function POST(req: Request) {
     });
     const dishMap = new Map(dishes.map((d) => [d.id, d]));
 
-    let totalCents = 0;
     const validItems: EmailItem[] = [];
     for (const it of items) {
       const dish = dishMap.get(it.dishId);
@@ -117,7 +121,6 @@ export async function POST(req: Request) {
         return { group: g?.name ?? "", choice: o.label };
       });
 
-      totalCents += dish.priceCents * it.quantity;
       validItems.push({
         dishId: dish.id,
         dishName: dish.name,
@@ -134,51 +137,85 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "所选菜品不可用，请刷新菜单" }, { status: 400 });
     }
 
-    // 写入订单 + 明细（事务）
-    const order = await prisma.order.create({
-      data: {
-        userId: session.id,
-        guestName: session.name,
-        date,
-        timeSlot,
-        notes: notes || null,
-        totalCents,
-        items: {
-          create: validItems.map((it) => ({
-            dishId: it.dishId,
-            dishName: it.dishName,
-            priceCents: it.priceCents,
-            quantity: it.quantity,
-            options: it.options.length > 0 ? it.options : undefined,
-            ingredients: it.ingredients.length > 0 ? it.ingredients : undefined,
-          })),
-        },
-      },
+    // 找到或创建该时段的共享订单（一个 (date, timeSlot) 只有一个）
+    let order = await prisma.order.findUnique({
+      where: { date_timeSlot: { date, timeSlot } },
+    });
+    if (order && order.status !== OrderStatus.PENDING) {
+      return NextResponse.json(
+        { error: "这个时段的订单已被主人确认，无法再点" },
+        { status: 409 }
+      );
+    }
+    if (!order) {
+      try {
+        order = await prisma.order.create({
+          data: {
+            userId: session.id,
+            guestName: session.name,
+            date,
+            timeSlot,
+            status: OrderStatus.PENDING,
+            totalCents: 0,
+          },
+        });
+      } catch (e) {
+        // 并发：另一个人刚好同时创建了同一时段的订单 → 再查一次并追加
+        if ((e as { code?: string }).code === "P2002") {
+          order = await prisma.order.findUnique({
+            where: { date_timeSlot: { date, timeSlot } },
+          });
+          if (!order || order.status !== OrderStatus.PENDING) {
+            return NextResponse.json(
+              { error: "这个时段的订单已被主人确认，无法再点" },
+              { status: 409 }
+            );
+          }
+        } else {
+          throw e;
+        }
+      }
+    }
+
+    // 追加明细
+    await prisma.orderItem.createMany({
+      data: validItems.map((it) => ({
+        orderId: order.id,
+        dishId: it.dishId,
+        dishName: it.dishName,
+        priceCents: it.priceCents,
+        quantity: it.quantity,
+        options: it.options.length > 0 ? it.options : undefined,
+        ingredients: it.ingredients.length > 0 ? it.ingredients : undefined,
+        addedByUserId: session.id,
+        addedByName: session.name,
+      })),
     });
 
-    // 邮件通知：必须等待发送完成再返回。
-    // 原因：Vercel serverless 函数返回响应后会被冻结，之前用 `void send...`（发完即忘）
-    // 常常导致邮件请求还没真正发出就被冻结，出现「下单了但邮件没发/发得慢」。
-    // 这里 await + 3 秒超时兜底：Resend 正常几百毫秒就受理，超时也不阻塞下单。
+    // 重算合计 + 追加备注（保留之前别人写的备注）
+    const all = await prisma.orderItem.findMany({ where: { orderId: order.id } });
+    const totalCents = all.reduce((s, x) => s + x.priceCents * x.quantity, 0);
+    const appendedNotes = notes
+      ? order.notes
+        ? `${order.notes}\n${session.name}：${notes}`.slice(0, 1000)
+        : `${session.name}：${notes}`
+      : order.notes;
+
+    const updated = await prisma.order.update({
+      where: { id: order.id },
+      data: { totalCents, notes: appendedNotes },
+      include: { items: true },
+    });
+
+    // 邮件通知（每次操作都发；等待发送完成再返回，避免 serverless 冻结丢失）
     const origin = new URL(req.url).origin;
-    await Promise.race([
-      sendOrderNotificationEmail(
-        {
-          orderId: order.id,
-          guestName: order.guestName,
-          date: order.date,
-          timeSlot: order.timeSlot,
-          notes: order.notes,
-          totalCents: order.totalCents,
-          items: validItems,
-        },
-        origin
-      ),
-      new Promise((resolve) => setTimeout(resolve, 3000)),
-    ]);
+    await sendUpdateWithTimeout(updated, "提交了点单", session.name, origin);
 
     return NextResponse.json(
-      { ok: true, order: { id: order.id, date, timeSlot, totalCents } },
+      {
+        ok: true,
+        order: { id: updated.id, date, timeSlot, totalCents: updated.totalCents, status: updated.status },
+      },
       { status: 201 }
     );
   } catch (e) {
@@ -187,7 +224,7 @@ export async function POST(req: Request) {
   }
 }
 
-/** 我的订单 */
+/** 我的点单：返回我参与过的共享订单（按创建时间倒序） */
 export async function GET() {
   const session = await getSession();
   if (!session) {
@@ -195,7 +232,7 @@ export async function GET() {
   }
 
   const orders = await prisma.order.findMany({
-    where: { userId: session.id },
+    where: { items: { some: { addedByUserId: session.id } } },
     orderBy: { createdAt: "desc" },
     include: { items: true },
     take: 50,
