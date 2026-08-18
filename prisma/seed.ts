@@ -52,6 +52,98 @@ async function main() {
   for (const d of dishes) {
     await prisma.dish.create({ data: d });
   }
+
+  // 给几道菜加上口味选项与备料克重，方便演示新功能
+  const spicy = await prisma.dish.findFirst({ where: { name: "宫保鸡丁" } });
+  const tofu = await prisma.dish.findFirst({ where: { name: "麻婆豆腐" } });
+  const fish = await prisma.dish.findFirst({ where: { name: "清蒸鲈鱼" } });
+  const ribs = await prisma.dish.findFirst({ where: { name: "红烧肉" } });
+
+  if (spicy) {
+    await prisma.dish.update({
+      where: { id: spicy.id },
+      data: {
+        optionGroups: {
+          create: {
+            name: "辣度",
+            isRequired: true,
+            sortOrder: 0,
+            options: {
+              create: [
+                { label: "微辣", sortOrder: 0 },
+                { label: "中辣", sortOrder: 1 },
+                { label: "重辣", sortOrder: 2 },
+              ],
+            },
+          },
+        },
+        ingredients: {
+          create: [
+            { name: "鸡腿肉", gramsPerServing: 250, sortOrder: 0 },
+            { name: "花生米", gramsPerServing: 50, sortOrder: 1 },
+            { name: "干辣椒", gramsPerServing: 15, sortOrder: 2 },
+          ],
+        },
+      },
+    });
+  }
+  if (tofu) {
+    await prisma.dish.update({
+      where: { id: tofu.id },
+      data: {
+        optionGroups: {
+          create: {
+            name: "辣度",
+            isRequired: true,
+            sortOrder: 0,
+            options: {
+              create: [
+                { label: "微辣", sortOrder: 0 },
+                { label: "中辣", sortOrder: 1 },
+                { label: "重辣", sortOrder: 2 },
+              ],
+            },
+          },
+        },
+        ingredients: {
+          create: [
+            { name: "嫩豆腐", gramsPerServing: 350, sortOrder: 0 },
+            { name: "牛肉末", gramsPerServing: 80, sortOrder: 1 },
+            { name: "豆瓣酱", gramsPerServing: 30, sortOrder: 2 },
+          ],
+        },
+      },
+    });
+  }
+  if (fish) {
+    await prisma.dish.update({
+      where: { id: fish.id },
+      data: {
+        ingredients: {
+          create: [
+            { name: "鲈鱼", gramsPerServing: 600, sortOrder: 0 },
+            { name: "小葱", gramsPerServing: 20, sortOrder: 1 },
+            { name: "蒸鱼豉油", gramsPerServing: 25, sortOrder: 2 },
+          ],
+        },
+      },
+    });
+  }
+  if (ribs) {
+    await prisma.dish.update({
+      where: { id: ribs.id },
+      data: {
+        ingredients: {
+          create: [
+            { name: "五花肉", gramsPerServing: 500, sortOrder: 0 },
+            { name: "冰糖", gramsPerServing: 40, sortOrder: 1 },
+            { name: "姜", gramsPerServing: 20, sortOrder: 2 },
+          ],
+        },
+      },
+    });
+  }
+
   console.log(`✅ 已创建 ${dishes.length} 道示例菜品。`);
 }
 

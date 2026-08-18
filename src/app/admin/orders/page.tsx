@@ -11,7 +11,45 @@ type OrderItem = {
   dishName: string;
   quantity: number;
   priceCents: number;
+  options: unknown;
+  ingredients: unknown;
 };
+
+type PrepRow = { name: string; grams: number };
+
+/** 解析下单时快照的选项 JSON：[{ group, choice }] */
+function optionsText(it: OrderItem): string {
+  if (!Array.isArray(it.options)) return "";
+  return it.options
+    .map((o) => {
+      const g = o as { group?: string; choice?: string };
+      return `${g.group ?? ""}:${g.choice ?? ""}`;
+    })
+    .filter((s) => s !== ":")
+    .join(" · ");
+}
+
+/** 解析下单时快照的备料 JSON：[{ name, gramsPerServing }] */
+function parseIngredients(it: OrderItem): PrepRow[] {
+  if (!Array.isArray(it.ingredients)) return [];
+  return it.ingredients
+    .map((i) => {
+      const ing = i as { name?: string; gramsPerServing?: number };
+      return { name: String(ing.name ?? ""), grams: Number(ing.gramsPerServing) || 0 };
+    })
+    .filter((r) => r.name && r.grams > 0);
+}
+
+/** 按订单汇总备料：每份克重 × 份数 */
+function prepSummary(items: OrderItem[]): PrepRow[] {
+  const map = new Map<string, number>();
+  for (const it of items) {
+    for (const row of parseIngredients(it)) {
+      map.set(row.name, (map.get(row.name) ?? 0) + row.grams * it.quantity);
+    }
+  }
+  return Array.from(map.entries()).map(([name, grams]) => ({ name, grams }));
+}
 
 type Order = {
   id: string;
@@ -160,13 +198,38 @@ export default function AdminOrdersPage() {
                     </div>
 
                     <div className="mt-2 grid grid-cols-1 gap-x-6 gap-y-1 text-sm text-ink/80 sm:grid-cols-2">
-                      {o.items.map((it) => (
-                        <div key={it.id} className="flex justify-between">
-                          <span>{it.dishName}</span>
-                          <span className="text-muted">×{it.quantity}</span>
-                        </div>
-                      ))}
+                      {o.items.map((it) => {
+                        const opts = optionsText(it);
+                        return (
+                          <div key={it.id}>
+                            <div className="flex justify-between">
+                              <span>{it.dishName}</span>
+                              <span className="text-muted">×{it.quantity}</span>
+                            </div>
+                            {opts && <div className="text-xs text-muted">{opts}</div>}
+                          </div>
+                        );
+                      })}
                     </div>
+
+                    {(() => {
+                      const prep = prepSummary(o.items);
+                      if (prep.length === 0) return null;
+                      return (
+                        <div className="mt-3 rounded-lg bg-scallion/10 px-3 py-2">
+                          <div className="text-xs font-semibold text-scallion-dark">
+                            备料清单（按份数汇总）
+                          </div>
+                          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[13px] text-ink/80">
+                            {prep.map((r) => (
+                              <span key={r.name}>
+                                {r.name} <span className="font-semibold">{r.grams}g</span>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {o.notes && (
                       <p className="mt-2 rounded-lg bg-paper px-3 py-2 text-xs text-muted">

@@ -2,10 +2,11 @@ import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireHost, isResponse } from "@/lib/admin-guard";
+import { parseOptionGroups, parseIngredients } from "@/lib/dish-input";
 
 type Params = { params: Promise<{ id: string }> };
 
-/** 更新菜品 */
+/** 更新菜品（含整组替换口味选项与备料清单） */
 export async function PATCH(req: Request, { params }: Params) {
   const guard = await requireHost();
   if (isResponse(guard)) return guard;
@@ -28,7 +29,38 @@ export async function PATCH(req: Request, { params }: Params) {
     }
     if (typeof body.available === "boolean") data.available = body.available;
 
-    const dish = await prisma.dish.update({ where: { id }, data });
+    const optionGroups = parseOptionGroups(body.optionGroups);
+    const ingredients = parseIngredients(body.ingredients);
+
+    // 整组替换：先清空旧的选项组与备料（订单里已有的是快照，不受影响）
+    const dish = await prisma.dish.update({
+      where: { id },
+      data: {
+        ...data,
+        optionGroups: {
+          deleteMany: {},
+          create: optionGroups.map((g, gi) => ({
+            name: g.name,
+            isRequired: g.isRequired,
+            sortOrder: gi,
+            options: { create: g.options.map((o, oi) => ({ label: o.label, sortOrder: oi })) },
+          })),
+        },
+        ingredients: {
+          deleteMany: {},
+          create: ingredients.map((ing, ii) => ({
+            name: ing.name,
+            gramsPerServing: ing.grams,
+            sortOrder: ii,
+          })),
+        },
+      },
+      include: {
+        optionGroups: { include: { options: true } },
+        ingredients: true,
+      },
+    });
+
     return NextResponse.json({ dish });
   } catch (e) {
     console.error("[admin dish update]", e);

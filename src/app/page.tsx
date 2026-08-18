@@ -10,12 +10,12 @@ export default async function HomePage() {
   const dishes = await prisma.dish.findMany({
     where: { available: true },
     orderBy: [{ category: "asc" }, { sortOrder: "asc" }],
-    select: {
-      id: true,
-      name: true,
-      description: true,
-      priceCents: true,
-      category: true,
+    include: {
+      optionGroups: {
+        orderBy: { sortOrder: "asc" },
+        include: { options: { orderBy: { sortOrder: "asc" } } },
+      },
+      ingredients: { orderBy: { sortOrder: "asc" } },
     },
   });
 

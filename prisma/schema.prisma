@@ -34,16 +34,51 @@ model User {
 }
 
 model Dish {
-  id          String      @id @default(cuid())
-  name        String
-  description String?
-  priceCents  Int
-  category    String      @default("热菜")
-  imageUrl    String?
-  available   Boolean     @default(true)
-  sortOrder   Int         @default(0)
-  createdAt   DateTime    @default(now())
-  orderItems  OrderItem[]
+  id           String              @id @default(cuid())
+  name         String
+  description  String?
+  priceCents   Int
+  category     String              @default("热菜")
+  imageUrl     String?
+  available    Boolean             @default(true)
+  sortOrder    Int                 @default(0)
+  createdAt    DateTime            @default(now())
+  orderItems   OrderItem[]
+  optionGroups DishOptionGroup[]
+  ingredients  DishIngredient[]
+}
+
+model DishOptionGroup {
+  id         String        @id @default(cuid())
+  dish       Dish          @relation(fields: [dishId], references: [id], onDelete: Cascade)
+  dishId     String
+  name       String // 例如「辣度」
+  isRequired Boolean       @default(true)
+  sortOrder  Int           @default(0)
+  options    DishOption[]
+
+  @@index([dishId])
+}
+
+model DishOption {
+  id        String           @id @default(cuid())
+  group     DishOptionGroup  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  groupId   String
+  label     String // 例如「微辣」
+  sortOrder Int              @default(0)
+
+  @@index([groupId])
+}
+
+model DishIngredient {
+  id              String @id @default(cuid())
+  dish            Dish   @relation(fields: [dishId], references: [id], onDelete: Cascade)
+  dishId          String
+  name            String // 例如「牛腩」
+  gramsPerServing Int // 每份所需克重
+  sortOrder       Int    @default(0)
+
+  @@index([dishId])
 }
 
 model Order {
@@ -64,14 +99,16 @@ model Order {
 }
 
 model OrderItem {
-  id         String @id @default(cuid())
-  order      Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  id         String      @id @default(cuid())
+  order      Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
   orderId    String
-  dish       Dish?  @relation(fields: [dishId], references: [id], onDelete: SetNull)
+  dish       Dish?       @relation(fields: [dishId], references: [id], onDelete: SetNull)
   dishId     String?
   dishName   String // 下单时的菜名快照
-  priceCents Int    // 下单时的单价快照（分）
-  quantity   Int
+  priceCents Int // 下单时的单价快照（分）
+  quantity    Int
+  options     Json? // 下单时快照的选项：[{ group: "辣度", choice: "重辣" }]
+  ingredients Json? // 下单时快照的备料：[{ name: "牛腩", gramsPerServing: 250 }]
 }
 
 model BlockedSlot {

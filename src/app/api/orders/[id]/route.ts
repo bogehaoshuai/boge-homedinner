@@ -11,7 +11,7 @@ type Params = { params: Promise<{ id: string }> };
  * PATCH /api/orders/:id   body: { action: "cancel" }
  * 仅允许订单本人操作，且订单处于 PENDING / CONFIRMED 状态。
  */
-export async function PATCH(_req: Request, { params }: Params) {
+export async function PATCH(req: Request, { params }: Params) {
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "请先登录", code: "UNAUTHENTICATED" }, { status: 401 });
@@ -37,14 +37,18 @@ export async function PATCH(_req: Request, { params }: Params) {
     include: { items: true },
   });
 
-  // 通知主人（尽力而为，不阻塞取消）
+  // 通知主人（尽力而为，不阻塞取消）；用请求 origin 拼链接，避免指向 localhost
   if (updated) {
-    void sendOrderCancelledEmail({
-      orderId: updated.id,
-      guestName: updated.guestName,
-      date: updated.date,
-      timeSlot: updated.timeSlot,
-    });
+    const origin = new URL(req.url).origin;
+    void sendOrderCancelledEmail(
+      {
+        orderId: updated.id,
+        guestName: updated.guestName,
+        date: updated.date,
+        timeSlot: updated.timeSlot,
+      },
+      origin
+    );
   }
 
   return NextResponse.json({ order: updated });

@@ -22,18 +22,49 @@ export type Dish = {
   description: string | null;
   priceCents: number;
   category: string;
+  optionGroups: {
+    id: string;
+    name: string;
+    isRequired: boolean;
+    options: { id: string; label: string }[];
+  }[];
+  ingredients: { id: string; name: string; gramsPerServing: number }[];
 };
 
 type Slot = { time: string; label: string; available: boolean };
+
+/** 点单行：同一道菜 + 同一组选项 视为一行 */
+export type CartLine = {
+  dishId: string;
+  optionIds: string[];
+  quantity: number;
+};
 
 function yuan(cents: number) {
   return `¥${(cents / 100).toLocaleString("zh-CN", { maximumFractionDigits: 2 })}`;
 }
 
+function lineKey(dishId: string, optionIds: string[]) {
+  return `${dishId}::${[...optionIds].sort().join(",")}`;
+}
+
+function optionsTextFor(dish: Dish, optionIds: string[]) {
+  const map = new Map<string, string>();
+  for (const g of dish.optionGroups) {
+    const o = g.options.find((x) => optionIds.includes(x.id));
+    if (o) map.set(g.name, o.label);
+  }
+  return Array.from(map.entries())
+    .map(([group, choice]) => `${group}:${choice}`)
+    .join(" · ");
+}
+
 /** 点单草稿存到 sessionStorage：未登录去登录、跳转后回来不丢已选菜品 */
 const DRAFT_KEY = "hd_order_draft";
 
-function readDraft(): { date?: string; slot?: string; cart?: Record<string, number>; notes?: string } | null {
+type Draft = { date?: string; slot?: string; cart?: CartLine[]; notes?: string };
+
+function readDraft(): Draft | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.sessionStorage.getItem(DRAFT_KEY);
@@ -41,6 +72,24 @@ function readDraft(): { date?: string; slot?: string; cart?: Record<string, numb
   } catch {
     return null;
   }
+}
+
+/** 兼容旧草稿（cart 是 {dishId: 数量}）与新草稿（cart 是数组） */
+function normalizeCart(raw: unknown): CartLine[] {
+  if (Array.isArray(raw)) {
+    return raw
+      .filter(
+        (l): l is CartLine =>
+          !!l && typeof (l as CartLine).dishId === "string" && (l as CartLine).quantity > 0
+      )
+      .map((l) => ({ dishId: l.dishId, optionIds: l.optionIds ?? [], quantity: l.quantity }));
+  }
+  if (raw && typeof raw === "object") {
+    return Object.entries(raw as Record<string, number>)
+      .filter(([, q]) => q > 0)
+      .map(([dishId, quantity]) => ({ dishId, optionIds: [], quantity }));
+  }
+  return [];
 }
 
 export default function OrderFlow({
@@ -59,13 +108,19 @@ export default function OrderFlow({
   const [dayBlocked, setDayBlocked] = useState(false);
   const [dayNote, setDayNote] = useState<string | null>(null);
 
-  const [cart, setCart] = useState<Record<string, number>>({});
+  const [cart, setCart] = useState<CartLine[]>([]);
   const [notes, setNotes] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const [cartOpen, setCartOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ id: string; totalCents: number } | null>(null);
+
+  // 口味选择弹窗状态
+  const [configuring, setConfiguring] = useState<{
+    dish: Dish;
+    selected: string[];
+  } | null>(null);
 
   const loadSlots = useCallback(async (d: string) => {
     setSlots(null);
@@ -97,7 +152,7 @@ export default function OrderFlow({
     const draft = readDraft();
     if (draft?.date && dates.some((x) => x.value === draft.date)) setDate(draft.date);
     if (typeof draft?.slot === "string") setSlot(draft.slot);
-    if (draft?.cart && typeof draft.cart === "object") setCart(draft.cart);
+    if (draft?.cart !== undefined) setCart(normalizeCart(draft.cart));
     if (typeof draft?.notes === "string") setNotes(draft.notes);
     setHydrated(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -126,23 +181,58 @@ export default function OrderFlow({
     return Array.from(map.entries());
   }, [dishes]);
 
-  const cartEntries = Object.entries(cart).filter(([, q]) => q > 0);
-  const cartCount = cartEntries.reduce((s, [, q]) => s + q, 0);
-  const cartTotal = cartEntries.reduce((s, [id, q]) => {
-    const d = dishes.find((x) => x.id === id);
-    return s + (d ? d.priceCents * q : 0);
+  const dishMap = useMemo(() => {
+    const m = new Map<string, Dish>();
+    for (const d of dishes) m.set(d.id, d);
+    return m;
+  }, [dishes]);
+
+  const cartCount = cart.reduce((s, l) => s + l.quantity, 0);
+  const cartTotal = cart.reduce((s, l) => {
+    const d = dishMap.get(l.dishId);
+    return s + (d ? d.priceCents * l.quantity : 0);
   }, 0);
 
-  function addToCart(id: string) {
-    setCart((c) => ({ ...c, [id]: (c[id] ?? 0) + 1 }));
-  }
-  function removeFromCart(id: string) {
+  function addToCart(dish: Dish, optionIds: string[], qty = 1) {
     setCart((c) => {
-      const next = { ...c };
-      next[id] = (next[id] ?? 0) - 1;
-      if (next[id] <= 0) delete next[id];
-      return next;
+      const key = lineKey(dish.id, optionIds);
+      const existing = c.find((l) => lineKey(l.dishId, l.optionIds) === key);
+      if (existing) {
+        return c.map((l) =>
+          lineKey(l.dishId, l.optionIds) === key ? { ...l, quantity: l.quantity + qty } : l
+        );
+      }
+      return [...c, { dishId: dish.id, optionIds, quantity: qty }];
     });
+  }
+
+  function removeFromCart(key: string) {
+    setCart((c) =>
+      c
+        .map((l) => (lineKey(l.dishId, l.optionIds) === key ? { ...l, quantity: l.quantity - 1 } : l))
+        .filter((l) => l.quantity > 0)
+    );
+  }
+
+  /** 点击「+」：有选项（必选或选填）的菜先弹口味选择，否则直接加入 */
+  function onAddDish(dish: Dish) {
+    if (dish.optionGroups.length > 0) {
+      setConfiguring({ dish, selected: [] });
+    } else {
+      addToCart(dish, []);
+    }
+  }
+
+  /** 确认弹窗里的选择并加入点单 */
+  function confirmConfigured() {
+    if (!configuring) return;
+    const { dish, selected } = configuring;
+    const missing = dish.optionGroups.some(
+      (g) => g.isRequired && !g.options.some((o) => selected.includes(o.id))
+    );
+    if (missing) return; // 必选项没选完，不关闭
+    addToCart(dish, selected);
+    setConfiguring(null);
   }
 
   async function submitOrder() {
@@ -157,7 +247,7 @@ export default function OrderFlow({
           date,
           timeSlot: slot,
           notes,
-          items: cartEntries.map(([dishId, quantity]) => ({ dishId, quantity })),
+          items: cart.map((l) => ({ dishId: l.dishId, quantity: l.quantity, optionIds: l.optionIds })),
         }),
       });
       const data = await res.json();
@@ -170,7 +260,7 @@ export default function OrderFlow({
         return;
       }
       setSuccess(data.order);
-      setCart({});
+      setCart([]);
       setCartOpen(false);
       setNotes("");
       try {
@@ -297,7 +387,10 @@ export default function OrderFlow({
             </div>
             <div className="divide-y divide-line/70 rounded-2xl border border-line bg-card px-4 shadow-menu sm:px-6">
               {items.map((d) => {
-                const qty = cart[d.id] ?? 0;
+                const lineQty = cart.reduce(
+                  (s, l) => (l.dishId === d.id ? s + l.quantity : s),
+                  0
+                );
                 return (
                   <div key={d.id} className="flex items-center gap-3 py-3.5">
                     <div className="min-w-0 flex-1">
@@ -311,11 +404,27 @@ export default function OrderFlow({
                       {d.description && (
                         <p className="mt-0.5 text-[13px] text-muted">{d.description}</p>
                       )}
+                      {d.optionGroups.length > 0 && (
+                        <p className="mt-0.5 text-xs text-muted">
+                          可选：{d.optionGroups.map((g) => g.name).join(" · ")}
+                        </p>
+                      )}
+                      {d.ingredients.length > 0 && (
+                        <p className="mt-0.5 text-xs text-ink/50">
+                          备料：
+                          {d.ingredients.map((ing, i) => (
+                            <span key={ing.id}>
+                              {i > 0 && " · "}
+                              {ing.name} {ing.gramsPerServing}g
+                            </span>
+                          ))}
+                        </p>
+                      )}
                     </div>
 
-                    {qty === 0 ? (
+                    {lineQty === 0 ? (
                       <button
-                        onClick={() => addToCart(d.id)}
+                        onClick={() => onAddDish(d)}
                         className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-cinnabar text-cinnabar hover:bg-cinnabar hover:text-white"
                         aria-label={`把 ${d.name} 加入点单`}
                       >
@@ -324,17 +433,21 @@ export default function OrderFlow({
                     ) : (
                       <div className="flex shrink-0 items-center gap-1 rounded-full border border-line bg-paper/60 px-1 py-0.5">
                         <button
-                          onClick={() => removeFromCart(d.id)}
+                          onClick={() => {
+                            // 同菜多行时减少最后加入的那行；通常只有一行
+                            const lines = cart.filter((l) => l.dishId === d.id);
+                            removeFromCart(lineKey(lines[lines.length - 1].dishId, lines[lines.length - 1].optionIds));
+                          }}
                           className="flex h-6 w-6 items-center justify-center rounded-full text-ink/60 hover:bg-ink/5"
                           aria-label={`减少 ${d.name}`}
                         >
                           <Minus className="h-3.5 w-3.5" />
                         </button>
                         <span className="min-w-[18px] text-center text-sm font-semibold">
-                          {qty}
+                          {lineQty}
                         </span>
                         <button
-                          onClick={() => addToCart(d.id)}
+                          onClick={() => onAddDish(d)}
                           className="flex h-6 w-6 items-center justify-center rounded-full text-cinnabar hover:bg-cinnabar-light"
                           aria-label={`增加 ${d.name}`}
                         >
@@ -386,9 +499,105 @@ export default function OrderFlow({
       </div>
       <div className="h-20" />
 
+      {/* ── 口味选择弹窗 ───────────────────── */}
+      <Modal
+        open={!!configuring}
+        onClose={() => setConfiguring(null)}
+        title={configuring?.dish.name ?? ""}
+      >
+        {configuring && (
+          <div>
+            <p className="mb-4 text-sm text-muted">{yuan(configuring.dish.priceCents)} / 份</p>
+            {configuring.dish.optionGroups.map((g) => {
+              const picked = configuring.selected.find((id) =>
+                g.options.some((o) => o.id === id)
+              );
+              return (
+                <div key={g.id} className="mb-4">
+                  <div className="mb-2 flex items-baseline gap-2">
+                    <span className="text-sm font-semibold">{g.name}</span>
+                    {g.isRequired ? (
+                      <span className="text-xs text-cinnabar">* 必选</span>
+                    ) : (
+                      <span className="text-xs text-muted">选填</span>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {!g.isRequired && (
+                      <button
+                        onClick={() =>
+                          setConfiguring((c) =>
+                            c
+                              ? {
+                                  ...c,
+                                  selected: c.selected.filter(
+                                    (id) => !g.options.some((o) => o.id === id)
+                                  ),
+                                }
+                              : c
+                          )
+                        }
+                        className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
+                          !picked
+                            ? "border-scallion bg-scallion text-white"
+                            : "border-line bg-paper/60 text-ink/60 hover:border-scallion/50"
+                        }`}
+                      >
+                        不选
+                      </button>
+                    )}
+                    {g.options.map((o) => {
+                      const active = configuring.selected.includes(o.id);
+                      return (
+                        <button
+                          key={o.id}
+                          onClick={() =>
+                            setConfiguring((c) =>
+                              c
+                                ? {
+                                    ...c,
+                                    // 同组单选：先去掉本组所有已选
+                                    selected: [
+                                      ...c.selected.filter(
+                                        (id) => !g.options.some((x) => x.id === id)
+                                      ),
+                                      o.id,
+                                    ],
+                                  }
+                                : c
+                            )
+                          }
+                          className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
+                            active
+                              ? "border-cinnabar bg-cinnabar text-white"
+                              : "border-line bg-paper/60 hover:border-cinnabar/40"
+                          }`}
+                        >
+                          {o.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+            <Button
+              className="mt-2 w-full"
+              size="lg"
+              disabled={configuring.dish.optionGroups.some(
+                (g) => g.isRequired && !g.options.some((o) => configuring.selected.includes(o.id))
+              )}
+              onClick={confirmConfigured}
+            >
+              加入点单
+            </Button>
+          </div>
+        )}
+      </Modal>
+
       {/* ── 点菜单（购物车）抽屉 ────────────── */}
       <Modal open={cartOpen} onClose={() => setCartOpen(false)} title="点菜单">
-        {cartEntries.length === 0 ? (
+        {cart.length === 0 ? (
           <div className="py-8 text-center text-muted">还没有点菜，去菜单里挑几道吧</div>
         ) : (
           <div>
@@ -397,25 +606,28 @@ export default function OrderFlow({
               {slot ? `${slot} · ${mealLabel(slot)}` : "还没选时间"}
             </div>
             <ul className="divide-y divide-line/70">
-              {cartEntries.map(([id, q]) => {
-                const d = dishes.find((x) => x.id === id);
+              {cart.map((l) => {
+                const d = dishMap.get(l.dishId);
                 if (!d) return null;
+                const key = lineKey(l.dishId, l.optionIds);
+                const opts = optionsTextFor(d, l.optionIds);
                 return (
-                  <li key={id} className="flex items-center justify-between py-2.5">
+                  <li key={key} className="flex items-center justify-between py-2.5">
                     <div className="min-w-0">
                       <div className="truncate font-medium">{d.name}</div>
+                      {opts && <div className="text-xs text-muted">{opts}</div>}
                       <div className="text-xs text-muted">{yuan(d.priceCents)} / 份</div>
                     </div>
                     <div className="flex items-center gap-2">
                       <button
-                        onClick={() => removeFromCart(id)}
+                        onClick={() => removeFromCart(key)}
                         className="flex h-7 w-7 items-center justify-center rounded-full border border-line text-ink/60 hover:bg-ink/5"
                       >
                         <Minus className="h-3.5 w-3.5" />
                       </button>
-                      <span className="w-5 text-center text-sm font-semibold">{q}</span>
+                      <span className="w-5 text-center text-sm font-semibold">{l.quantity}</span>
                       <button
-                        onClick={() => addToCart(id)}
+                        onClick={() => addToCart(d, l.optionIds)}
                         className="flex h-7 w-7 items-center justify-center rounded-full border border-line text-cinnabar hover:bg-cinnabar-light"
                       >
                         <Plus className="h-3.5 w-3.5" />

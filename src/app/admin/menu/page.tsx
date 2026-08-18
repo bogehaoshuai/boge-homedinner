@@ -1,9 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, Pencil, Plus, Trash2, UtensilsCrossed } from "lucide-react";
+import { Loader2, Pencil, Plus, Trash2, UtensilsCrossed, X } from "lucide-react";
 import { Badge, Button, Input, Modal, Spinner, Textarea } from "@/components/ui";
 import { DISH_CATEGORIES } from "@/lib/constants";
+
+type Option = { id: string; label: string; sortOrder: number };
+type OptionGroup = {
+  id: string;
+  name: string;
+  isRequired: boolean;
+  sortOrder: number;
+  options: Option[];
+};
+type Ingredient = { id: string; name: string; gramsPerServing: number; sortOrder: number };
 
 type Dish = {
   id: string;
@@ -13,7 +23,20 @@ type Dish = {
   category: string;
   available: boolean;
   sortOrder: number;
+  optionGroups: OptionGroup[];
+  ingredients: Ingredient[];
 };
+
+// 编辑器里用本地 key 标识行（新增的行还没有服务端 id）
+let k = 0;
+function newKey() {
+  k += 1;
+  return `k${Date.now()}-${k}`;
+}
+
+type OptRow = { key: string; label: string };
+type GroupRow = { key: string; name: string; isRequired: boolean; options: OptRow[] };
+type IngRow = { key: string; name: string; grams: string };
 
 type FormState = {
   id?: string;
@@ -22,7 +45,13 @@ type FormState = {
   priceYuan: string;
   description: string;
   available: boolean;
+  groups: GroupRow[];
+  ingredients: IngRow[];
 };
+
+function emptyGroup(): GroupRow {
+  return { key: newKey(), name: "", isRequired: true, options: [{ key: newKey(), label: "" }] };
+}
 
 const emptyForm: FormState = {
   name: "",
@@ -30,6 +59,8 @@ const emptyForm: FormState = {
   priceYuan: "",
   description: "",
   available: true,
+  groups: [],
+  ingredients: [],
 };
 
 function yuan(cents: number) {
@@ -59,7 +90,11 @@ export default function AdminMenuPage() {
   }, [load]);
 
   function openAdd() {
-    setForm(emptyForm);
+    setForm({
+      ...emptyForm,
+      groups: [],
+      ingredients: [],
+    });
     setModalOpen(true);
   }
 
@@ -71,6 +106,17 @@ export default function AdminMenuPage() {
       priceYuan: yuan(d.priceCents),
       description: d.description ?? "",
       available: d.available,
+      groups: d.optionGroups.map((g) => ({
+        key: newKey(),
+        name: g.name,
+        isRequired: g.isRequired,
+        options: g.options.map((o) => ({ key: newKey(), label: o.label })),
+      })),
+      ingredients: d.ingredients.map((ing) => ({
+        key: newKey(),
+        name: ing.name,
+        grams: String(ing.gramsPerServing),
+      })),
     });
     setModalOpen(true);
   }
@@ -98,6 +144,22 @@ export default function AdminMenuPage() {
           priceYuan: price,
           description: form.description.trim(),
           available: form.available,
+          optionGroups: form.groups
+            .filter((g) => g.name.trim() && g.options.some((o) => o.label.trim()))
+            .map((g) => ({
+              name: g.name.trim(),
+              isRequired: g.isRequired,
+              options: g.options
+                .map((o) => o.label.trim())
+                .filter((label) => label)
+                .map((label) => ({ label })),
+            })),
+          ingredients: form.ingredients
+            .map((ing) => ({
+              name: ing.name.trim(),
+              grams: Math.round(Number(ing.grams)),
+            }))
+            .filter((ing) => ing.name && Number.isFinite(ing.grams) && ing.grams > 0),
         }),
       });
       const data = await res.json();
@@ -183,6 +245,26 @@ export default function AdminMenuPage() {
                       {d.description && (
                         <p className="mt-0.5 truncate text-[13px] text-muted">{d.description}</p>
                       )}
+                      {(d.optionGroups.length > 0 || d.ingredients.length > 0) && (
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                          {d.optionGroups.map((g) => (
+                            <span
+                              key={g.id}
+                              className="rounded-md bg-cinnabar-light/70 px-1.5 py-0.5 text-[11px] text-cinnabar"
+                            >
+                              {g.name}:{g.options.map((o) => o.label).join("/")}
+                            </span>
+                          ))}
+                          {d.ingredients.map((ing) => (
+                            <span
+                              key={ing.id}
+                              className="rounded-md bg-scallion/10 px-1.5 py-0.5 text-[11px] text-scallion"
+                            >
+                              {ing.name} {ing.gramsPerServing}g
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <div className="whitespace-nowrap font-display font-bold text-cinnabar">
                       ¥{yuan(d.priceCents)}
@@ -227,7 +309,7 @@ export default function AdminMenuPage() {
         onClose={() => setModalOpen(false)}
         title={form.id ? "编辑菜品" : "加道新菜"}
       >
-        <div className="space-y-4">
+        <div className="max-h-[70vh] space-y-5 overflow-y-auto pr-1">
           <Input
             label="菜名"
             value={form.name}
@@ -268,6 +350,217 @@ export default function AdminMenuPage() {
             rows={2}
             maxLength={100}
           />
+
+          {/* ── 口味选项组 ─────────────────────── */}
+          <div className="rounded-xl border border-line bg-paper/40 p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-semibold">
+                口味选项 <span className="font-normal text-muted">（选填）</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, groups: [...form.groups, emptyGroup()] })}
+                className="flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-xs text-ink/70 hover:border-cinnabar/40 hover:text-cinnabar"
+              >
+                <Plus className="h-3.5 w-3.5" /> 加一组
+              </button>
+            </div>
+            <p className="mb-2 text-xs text-muted">
+              例：「辣度」→ 微辣 / 中辣 / 重辣。客人点这道菜时必须选必选组里的一个。
+            </p>
+            {form.groups.length === 0 && (
+              <p className="py-1 text-xs text-ink/40">没有选项组，客人直接按份点。</p>
+            )}
+            <div className="space-y-3">
+              {form.groups.map((g, gi) => (
+                <div key={g.key} className="rounded-lg border border-line bg-card p-2.5">
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={g.name}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          groups: form.groups.map((x) =>
+                            x.key === g.key ? { ...x, name: e.target.value } : x
+                          ),
+                        })
+                      }
+                      placeholder="组名，如：辣度"
+                      maxLength={10}
+                      className="w-28 rounded-md border border-line bg-card px-2 py-1.5 text-sm focus:border-cinnabar/50 focus:outline-none"
+                    />
+                    <label className="flex items-center gap-1.5 text-xs text-ink/70">
+                      <input
+                        type="checkbox"
+                        checked={g.isRequired}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            groups: form.groups.map((x) =>
+                              x.key === g.key ? { ...x, isRequired: e.target.checked } : x
+                            ),
+                          })
+                        }
+                        className="h-3.5 w-3.5 accent-cinnabar"
+                      />
+                      必选
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setForm({ ...form, groups: form.groups.filter((x) => x.key !== g.key) })
+                      }
+                      className="ml-auto rounded p-1 text-ink/40 hover:text-cinnabar"
+                      aria-label="删除这组"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    {g.options.map((o, oi) => (
+                      <div key={o.key} className="flex items-center gap-1">
+                        <input
+                          value={o.label}
+                          onChange={(e) =>
+                            setForm({
+                              ...form,
+                              groups: form.groups.map((x) =>
+                                x.key === g.key
+                                  ? {
+                                      ...x,
+                                      options: x.options.map((y) =>
+                                        y.key === o.key ? { ...y, label: e.target.value } : y
+                                      ),
+                                    }
+                                  : x
+                              ),
+                            })
+                          }
+                          placeholder={oi === 0 ? "如：微辣" : `选项 ${oi + 1}`}
+                          maxLength={10}
+                          className="w-20 rounded-md border border-line bg-card px-2 py-1.5 text-sm focus:border-cinnabar/50 focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setForm({
+                              ...form,
+                              groups: form.groups.map((x) =>
+                                x.key === g.key
+                                  ? { ...x, options: x.options.filter((y) => y.key !== o.key) }
+                                  : x
+                              ),
+                            })
+                          }
+                          className="rounded p-0.5 text-ink/30 hover:text-cinnabar"
+                          aria-label="删除选项"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setForm({
+                          ...form,
+                          groups: form.groups.map((x) =>
+                            x.key === g.key
+                              ? { ...x, options: [...x.options, { key: newKey(), label: "" }] }
+                              : x
+                          ),
+                        })
+                      }
+                      className="rounded-md border border-dashed border-line px-2 py-1 text-xs text-ink/50 hover:border-cinnabar/40 hover:text-cinnabar"
+                    >
+                      + 选项
+                    </button>
+                  </div>
+                  {gi < form.groups.length - 1 && <div className="mt-2 h-px bg-line/60" />}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* ── 备料清单 ─────────────────────── */}
+          <div className="rounded-xl border border-line bg-paper/40 p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-semibold">
+                备料（每份克重） <span className="font-normal text-muted">（选填）</span>
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  setForm({
+                    ...form,
+                    ingredients: [...form.ingredients, { key: newKey(), name: "", grams: "" }],
+                  })
+                }
+                className="flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-xs text-ink/70 hover:border-cinnabar/40 hover:text-cinnabar"
+              >
+                <Plus className="h-3.5 w-3.5" /> 加原料
+              </button>
+            </div>
+            <p className="mb-2 text-xs text-muted">
+              例：牛腩 250g。下单后会在通知邮件里自动按「每份克重 × 份数」汇总采购量。
+            </p>
+            {form.ingredients.length === 0 && (
+              <p className="py-1 text-xs text-ink/40">没有备料，邮件里不展示备料清单。</p>
+            )}
+            <div className="space-y-2">
+              {form.ingredients.map((ing, ii) => (
+                <div key={ing.key} className="flex items-center gap-2">
+                  <input
+                    value={ing.name}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        ingredients: form.ingredients.map((x) =>
+                          x.key === ing.key ? { ...x, name: e.target.value } : x
+                        ),
+                      })
+                    }
+                    placeholder={ii === 0 ? "原料名，如：牛腩" : `原料 ${ii + 1}`}
+                    maxLength={20}
+                    className="flex-1 rounded-md border border-line bg-card px-2 py-1.5 text-sm focus:border-cinnabar/50 focus:outline-none"
+                  />
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={ing.grams}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          ingredients: form.ingredients.map((x) =>
+                            x.key === ing.key ? { ...x, grams: e.target.value } : x
+                          ),
+                        })
+                      }
+                      placeholder="克"
+                      className="w-20 rounded-md border border-line bg-card px-2 py-1.5 text-sm focus:border-cinnabar/50 focus:outline-none"
+                    />
+                    <span className="text-xs text-muted">g</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setForm({
+                        ...form,
+                        ingredients: form.ingredients.filter((x) => x.key !== ing.key),
+                      })
+                    }
+                    className="rounded p-1 text-ink/40 hover:text-cinnabar"
+                    aria-label="删除原料"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"

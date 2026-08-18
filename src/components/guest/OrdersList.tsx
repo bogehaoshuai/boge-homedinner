@@ -11,7 +11,19 @@ type OrderItem = {
   dishName: string;
   quantity: number;
   priceCents: number;
+  options: unknown;
 };
+
+function optionsText(it: OrderItem): string {
+  if (!Array.isArray(it.options)) return "";
+  return it.options
+    .map((o) => {
+      const g = o as { group?: string; choice?: string };
+      return `${g.group ?? ""}:${g.choice ?? ""}`;
+    })
+    .filter((s) => s !== ":")
+    .join(" · ");
+}
 
 export type Order = {
   id: string;
@@ -83,14 +95,20 @@ export default function OrdersList({ initialOrders }: { initialOrders: Order[] }
             </div>
 
             <ul className="mt-3 space-y-1 text-sm text-ink/80">
-              {o.items.map((it) => (
-                <li key={it.id} className="flex justify-between">
-                  <span>{it.dishName}</span>
-                  <span className="text-muted">
-                    x{it.quantity} · ¥{((it.priceCents * it.quantity) / 100).toFixed(0)}
-                  </span>
-                </li>
-              ))}
+              {o.items.map((it) => {
+                const opts = optionsText(it);
+                return (
+                  <li key={it.id} className="flex justify-between">
+                    <div>
+                      <span>{it.dishName}</span>
+                      {opts && <span className="ml-2 text-xs text-muted">{opts}</span>}
+                    </div>
+                    <span className="text-muted">
+                      x{it.quantity} · ¥{((it.priceCents * it.quantity) / 100).toFixed(0)}
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
 
             {o.notes && (
